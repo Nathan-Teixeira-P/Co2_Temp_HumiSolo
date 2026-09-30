@@ -49,7 +49,7 @@ def entrada(id, co2, ts="01/01 00:00:00"):
 def test_historico_detecta_alta_de_co2():
     h = ia.historico_local([entrada(i, 600 + 200 * i) for i in range(4)])
     assert h["n"] == 4 and h["canais"]["co2"]["tendencia"] > 0
-    assert h["canais"]["co2"]["alem_limite_em"] >= 1
+    assert h["canais"]["co2"]["suspeito_em"] == 0
     assert any("CO2" in i for i in h["insights"])
     assert "#4" in ia.resumo_historico([entrada(i, 600) for i in range(4)])
 

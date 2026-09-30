@@ -19,7 +19,7 @@ Sem hardware existe o modo **Demonstração**: o `server.py` gera 24 leituras si
 |---|---|---|
 | 1 | Visão geral, requisitos e infraestrutura | `run.sh`, `Dockerfile`, `docker-compose*.yml`, `.gitignore` |
 | 2 | Hardware e firmware Arduino | `arduino/*` |
-| 3 | Programa em C da entrega (matriz 2D) | `ecotech_co2.c`, `co2.md` |
+| 3 | Programa em C da entrega (matriz 2D) | `ecotech_co2.c` |
 | 4 | Programa em C com sensor real | `ecotech_co2_sensor.c` |
 | 5 | Análise local (o "cérebro" sem IA) | `analisar_ia.py` (`canal`, `setor`) |
 | 6 | Camada de IA e histórico analítico | `analisar_ia.py` (`openai`, `laudo`, `chat`, `historico_local`) |
@@ -32,7 +32,7 @@ Sem hardware existe o modo **Demonstração**: o `server.py` gera 24 leituras si
 
 **O que dizer**
 - Problema: estufa precisa monitorar CO₂ (ar), umidade do solo (irrigação) e temperatura (estresse térmico) e decidir ações.
-- Origem: começou como exercício da disciplina (vetor 1D de 5 leituras em `co2.md`, do professor Valdir Prado), evoluiu para matriz 2D (`ecotech_co2.c`), depois para hardware real + IA + web.
+- Origem: começou como exercício da disciplina (vetor 1D de 5 leituras, do professor Valdir Prado), evoluiu para matriz 2D (`ecotech_co2.c`), depois para hardware real + IA + web.
 - Só usa **biblioteca padrão** do Python (sem `pip install`) e `gcc`. A única dependência externa é a API da OpenAI.
 - **Como rodar:** `./run.sh` (confere gcc, Python ≥ 3.10 e `OPENAI_API_KEY` no `.env`, detecta a porta serial, abre o navegador) ou `docker compose up --build`. Com sensor: `docker compose -f docker-compose.yml -f docker-compose.serial.yml up --build` (mapeia o dispositivo `/dev/ttyACM0`).
 - **Segurança:** o servidor escuta só em `127.0.0.1` (a chave OpenAI nunca sai da máquina); no Docker a porta é publicada como `127.0.0.1:3000:3000`; a chave vem do `.env`, que está no `.gitignore` e no `.dockerignore` (não entra na imagem).
@@ -49,9 +49,7 @@ Sem hardware existe o modo **Demonstração**: o `server.py` gera 24 leituras si
 - **Umidade do solo capacitivo** em `A0`.
 - **Temperatura:** vem do próprio MH-Z19B (byte 4 da resposta, valor − 40). É a temperatura do módulo, resolução de 1 °C e erro de alguns graus. Para precisão, trocar por DS18B20/DHT22.
 
-**Dois sketches**
-- `mhz19_co2.ino` (original): imprime **só o ppm**, um por linha. Usado com `ecotech_co2_sensor.c` sozinho.
-- `ecotech_multi.ino` (atual): imprime `ppm,solo_pct,temp_c`, ex.: `812,47.3,26`. É o que o `server.py` lê.
+**Sketch (`ecotech_multi.ino`):** imprime `ppm,solo_pct,temp_c`, ex.: `812,47.3,26`. É o que o `server.py` lê.
 
 **Como a leitura funciona (protocolo)**
 1. Limpa o buffer, envia o comando de 9 bytes `FF 01 86 00 00 00 00 00 79`.
@@ -102,7 +100,7 @@ Sem hardware existe o modo **Demonstração**: o `server.py` gera 24 leituras si
 - `coletar_historico`: retorna 0 se a entrada acabar antes de completar 24 leituras → `main` sai com erro e **não gera painel**.
 - Progresso vai para **stderr**, painel para **stdout** (dá para redirecionar só o painel).
 
-**Uso manual:** `stty -F /dev/ttyACM0 9600 raw -echo; cat /dev/ttyACM0 | ./ecotech_sensor`. Teste sem Arduino: `python3 -c "import random;[print(random.randint(400,1700)) for _ in range(72)]" | ./ecotech_sensor` (com 1 setor só 24 números são usados).
+**Teste manual sem Arduino:** `python3 -c "import random;[print(random.randint(400,1700)) for _ in range(72)]" | ./ecotech_sensor` (com 1 setor só 24 números são usados).
 
 **Integração:** o `server.py` compila este arquivo para o binário `ecotech_sensor` e alimenta a entrada padrão com a coluna de CO₂ das leituras, guardando a saída como "painel do programa em C".
 

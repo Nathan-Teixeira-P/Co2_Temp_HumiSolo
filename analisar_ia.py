@@ -39,8 +39,7 @@ def canal(v, c):
     if lim_travado and mx_run >= lim_travado: susp.append(f"{mx_run} leituras identicas seguidas")
     if not all(c["faixa"][0] <= x <= c["faixa"][1] for x in v): susp.append("fora da faixa fisica")
     return {"valores": v, "media": my, "min": min(v), "max": max(v), "tendencia": a * 60 / INTERVALO_S,
-            "reta": [b, a], "previsao": prev, "suspeito": susp,
-            "fora": sum(x * s > lim * s for x in v)}
+            "reta": [b, a], "previsao": prev, "suspeito": susp}
 
 def corr(x, y):
     try: return statistics.correlation(x, y)
@@ -130,7 +129,7 @@ def slope(ys):
 
 def historico_local(hist):
     n = len(hist)
-    if n == 0: return {"n": 0, "canais": {}, "risco": {"serie": [], "tendencia": 0}, "insights": []}
+    if n == 0: return {"n": 0, "canais": {}, "risco": {"serie": []}, "insights": []}
     ss = [e["resultado"]["setores"] for e in hist]
     canais, insights = {}, []
     for k, c in CANAIS.items():
@@ -138,8 +137,7 @@ def historico_local(hist):
         alem = sum(c["sentido"] * (m - c["limite"]) >= 0 for m in medias)
         susp = sum(any(x["canais"][k]["suspeito"] for x in s) for s in ss)
         t = slope(medias)
-        canais[k] = {"medias": medias, "tendencia": t, "variacao": medias[-1] - medias[-2] if n > 1 else 0,
-                     "alem_limite_em": alem, "suspeito_em": susp}
+        canais[k] = {"medias": medias, "tendencia": t, "suspeito_em": susp}
         if n > 1 and abs(t) * (n - 1) > 0.05 * abs(c["limite"]):
             insights.append(f"{c['rot']}: media {'subindo' if t > 0 else 'caindo'} {abs(t):.1f} {c['un']} por teste "
                             f"(de {medias[0]:.1f} para {medias[-1]:.1f}).")
@@ -148,7 +146,7 @@ def historico_local(hist):
                                  + (" (problema recorrente: vale checar o hardware)." if susp >= 3 else "."))
     risco = [max(x["risco"] for x in s) for s in ss]
     if n > 1 and slope(risco) > 3: insights.append(f"Risco geral em alta ({risco[0]} -> {risco[-1]}).")
-    return {"n": n, "canais": canais, "risco": {"serie": risco, "tendencia": slope(risco)}, "insights": insights}
+    return {"n": n, "canais": canais, "risco": {"serie": risco}, "insights": insights}
 
 def resumo_historico(hist):
     h = historico_local(hist)
