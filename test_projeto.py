@@ -1,5 +1,5 @@
 """pytest -q  — sem mocks: logica pura direto, server.py como processo real (sem chamar a OpenAI)."""
-import json, os, subprocess, sys, time, urllib.error, urllib.request
+import json, os, socket, subprocess, sys, time, urllib.error, urllib.request
 import pytest
 import analisar_ia as ia
 
@@ -71,22 +71,30 @@ def test_historico_vazio():
     assert ia.historico_local([])["n"] == 0
 
 
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0)); return s.getsockname()[1]
+
+
 # ---- server.py de verdade (HTTP real, DADOS em pasta temporaria) ----
 @pytest.fixture(scope="module")
 def server(tmp_path_factory):
     dados = tmp_path_factory.mktemp("dados")
     (dados / "historico.json").write_text(json.dumps([entrada(1, 600), entrada(2, 1400)]))
-    p = subprocess.Popen([sys.executable, "server.py"], cwd=DIR, env={**os.environ, "DADOS": str(dados)},
+    porta = free_port()
+    url = f"http://127.0.0.1:{porta}"
+    p = subprocess.Popen([sys.executable, "server.py"], cwd=DIR, env={**os.environ, "DADOS": str(dados), "PORT": str(porta),
+                                                          "HTTPS_PROXY": "http://127.0.0.1:9"},  # OpenAI inalcancavel: testa a degradacao, sem gastar chave
                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     for _ in range(100):
         try:
-            urllib.request.urlopen("http://127.0.0.1:3000/", timeout=1)
+            urllib.request.urlopen(url + "/", timeout=1)
             break
         except OSError:
             if p.poll() is not None:
                 pytest.fail(p.stderr.read().decode())
             time.sleep(.1)
-    yield "http://127.0.0.1:3000"
+    yield url
     p.kill()
 
 
@@ -122,3 +130,21 @@ def test_detalhe_historico_e_404(server):
     assert st == 200 and json.loads(body)["setores"][0]["nome"] == "A"
     assert get(server + "/api/historico/999")[0] == 404
     assert get(server + "/nada")[0] == 404
+
+
+def test_post_invalido_devolve_400(server):
+    req = urllib.request.Request(server + "/api/chat", b"{nao e json", {"content-type": "application/json"})
+    with pytest.raises(urllib.error.HTTPError) as e: urllib.request.urlopen(req)
+    assert e.value.code == 400
+    assert post(server + "/api/chat", {})[0] == 400
+
+
+def test_run_so_aceita_post(server):
+    assert get(server + "/api/run?fonte=demo")[0] == 404
+
+
+def test_run_demo_grava_historico_mesmo_sem_ia(server):
+    st, r = post(server + "/api/run?fonte=demo", {})
+    assert st == 200 and r["setores"][0]["canais"]["co2"]["valores"] and r["painel"]  # C real rodou
+    assert r["laudo"] is None and r["erro_laudo"]  # IA fora do ar: analise local segue valendo
+    assert len(json.loads(get(server + "/api/historico")[1])["itens"]) >= 3

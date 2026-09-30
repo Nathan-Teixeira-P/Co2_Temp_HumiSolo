@@ -288,7 +288,7 @@ $("go").onclick = async () => {
   $("msg").innerHTML = `<span class="spin"></span>${$("fonte").value === "serial" ? "Coletando do sensor (~50 s)…" : "Analisando…"}`;
   try {
     const q = new URLSearchParams({fonte: $("fonte").value, porta: $("porta").value});
-    const res = await fetch("/api/run?" + q), r = await res.json();
+    const res = await fetch("/api/run?" + q, {method: "POST"}), r = await res.json();
     if (!res.ok) throw new Error(r.erro);
     idAtivo = null; render(r); carregarHistorico(); $("msg").textContent = "Atualizado às " + new Date().toLocaleTimeString();
   } catch (e) { $("msg").textContent = "Erro: " + e.message; }

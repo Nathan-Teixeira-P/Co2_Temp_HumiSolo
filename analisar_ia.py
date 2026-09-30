@@ -24,7 +24,7 @@ CANAIS = {
 def canal(v, c):
     n = len(v)
     mx, my = (n - 1) / 2, sum(v) / n
-    a = sum((i - mx) * (y - my) for i, y in enumerate(v)) / sum((i - mx) ** 2 for i in range(n))  # minimos quadrados
+    a = slope(v)  # minimos quadrados
     b = my - a * mx
     lim, s = c["limite"], c["sentido"]
     if v[-1] * s >= lim * s:
@@ -40,7 +40,8 @@ def canal(v, c):
         mx_run = max(mx_run, run)
     susp = []
     if saltos: susp.append(f"{saltos} saltos > {c['salto']} {c['un']}")
-    if mx_run >= c.get("travado", TRAVADO) if c.get("travado", TRAVADO) else False: susp.append(f"{mx_run} leituras identicas seguidas")
+    lim_travado = c.get("travado", TRAVADO)  # None = canal sem checagem de travamento
+    if lim_travado and mx_run >= lim_travado: susp.append(f"{mx_run} leituras identicas seguidas")
     if not all(c["faixa"][0] <= x <= c["faixa"][1] for x in v): susp.append("fora da faixa fisica")
     return {"valores": v, "media": my, "min": min(v), "max": max(v), "tendencia": a * 60 / INTERVALO_S,
             "reta": [b, a], "previsao": prev, "suspeito": susp,
@@ -84,15 +85,17 @@ def resumo_texto(setores):
     return "\n".join(linhas)
 
 def openai(messages, json_mode=False):
-    corpo = {"model": "gpt-4o-mini", "messages": messages}
+    corpo = {"model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"), "messages": messages}
     if json_mode: corpo["response_format"] = {"type": "json_object"}
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions", data=json.dumps(corpo).encode(),
-        headers={"authorization": "Bearer " + os.environ["OPENAI_API_KEY"], "content-type": "application/json"})
     try:
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/chat/completions", data=json.dumps(corpo).encode(),
+            headers={"authorization": "Bearer " + os.environ["OPENAI_API_KEY"], "content-type": "application/json"})
         return json.load(urllib.request.urlopen(req, timeout=60))["choices"][0]["message"]["content"], None
     except urllib.error.HTTPError as e:
         return None, f"Erro {e.code}: {e.read().decode()}"
+    except KeyError:
+        return None, "OPENAI_API_KEY nao configurada"
     except Exception as e:
         return None, str(e)
 

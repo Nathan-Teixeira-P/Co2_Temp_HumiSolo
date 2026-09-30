@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Frontend local: python3 server.py  ->  http://127.0.0.1:3000
-GET  /api/run   ?fonte=demo | ?fonte=serial&porta=/dev/ttyACM0
+POST /api/run   ?fonte=demo | ?fonte=serial&porta=/dev/ttyACM0
 POST /api/chat  {"pergunta", "resumo"}   (teste na tela + historico)
 GET  /api/historico[/id] · POST /api/historico/analise   (ultimos 10 testes em dados/historico.json)
 """
@@ -11,13 +11,14 @@ import analisar_ia as ia
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(DIR, "ecotech_sensor")
-subprocess.run(["gcc", "-Wall", "-Wextra", "-std=c11", "-o", BIN, os.path.join(DIR, "ecotech_co2_sensor.c")], check=True)
-TOTAL = 24 * len(ia.NOMES)
+AMOSTRAS = 24
+TOTAL = AMOSTRAS * len(ia.NOMES)
 PORTA = (sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*")) or ["/dev/ttyACM0"])[0]  # porta do Arduino detectada
 DADOS = os.environ.get("DADOS", os.path.join(DIR, "dados"))
 ARQ = os.path.join(DADOS, "historico.json")
 MAX_HIST = 10
 trava = threading.Lock()
+trava_serial = threading.Lock()  # so uma leitura por vez na porta
 
 def carregar():
     try: return json.load(open(ARQ, encoding="utf-8"))
@@ -34,7 +35,7 @@ def salvar(fonte, r):
         os.replace(tmp, ARQ)  # troca atomica: nunca deixa o historico pela metade
 
 def serie(tipo, base, passo, ruido, lo, hi):
-    n = 24
+    n = AMOSTRAS
     if tipo == "estavel": return [base + random.uniform(-ruido, ruido) for _ in range(n)]
     if tipo == "tendencia": return [base + i * passo + random.uniform(-ruido, ruido) for i in range(n)]
     if tipo == "travado": return [base + i * 0.2 for i in range(6)] + [base + 1] * (n - 6)
@@ -54,16 +55,26 @@ def demo():
 def serial(porta, prazo=300):
     subprocess.run(["stty", "-F", porta, "9600", "raw", "-echo"], check=True)
     p = subprocess.Popen(["cat", porta], stdout=subprocess.PIPE, text=True)
-    threading.Timer(prazo, p.kill).start()
+    timer = threading.Timer(prazo, p.kill)
+    timer.start()
     texto = ""
-    for l in p.stdout:
-        texto += l
-        if len(ia.parse(texto)) >= TOTAL: break
-    p.kill()
-    return ia.parse(texto)[:TOTAL]
+    try:
+        for l in p.stdout:
+            texto += l
+            if len(ia.parse(texto)) >= TOTAL: break
+    finally:
+        timer.cancel(); p.kill()
+    rows = ia.parse(texto)[:TOTAL]
+    if len(rows) < TOTAL: raise RuntimeError(f"Serial devolveu {len(rows)} de {TOTAL} leituras (tempo esgotado?)")
+    return rows
 
 def rodar(fonte, porta):
-    rows = serial(porta) if fonte == "serial" else demo()
+    if fonte == "serial":
+        if not trava_serial.acquire(blocking=False): raise RuntimeError("Ja existe uma leitura serial em andamento")
+        try: rows = serial(porta)
+        finally: trava_serial.release()
+    else:
+        rows = demo()
     # o programa em C (entrega da disciplina) continua sendo o painel oficial de CO2
     c = subprocess.run([BIN], input="".join(f"{int(r[0])}\n" for r in rows), capture_output=True, text=True, timeout=30)
     r = ia.processar(rows, c.stdout.strip())
@@ -81,10 +92,6 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/":
             html = open(os.path.join(DIR, "index.html"), encoding="utf-8").read().replace("/dev/ttyACM0", PORTA)
             return self.responder(200, "text/html; charset=utf-8", html.encode())
-        if u.path == "/api/run":
-            q = parse_qs(u.query)
-            try: return self.json(200, rodar(q.get("fonte", ["demo"])[0], q.get("porta", ["/dev/ttyACM0"])[0]))
-            except Exception as e: return self.json(500, {"erro": str(e)})
         if u.path == "/api/historico":
             h = carregar()
             itens = [{"id": e["id"], "ts": e["ts"], "fonte": e["fonte"],
@@ -97,11 +104,18 @@ class H(BaseHTTPRequestHandler):
         self.responder(404, "text/plain", b"nao encontrado")
 
     def do_POST(self):
-        corpo = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
-        if self.path == "/api/chat":
+        u = urlparse(self.path)
+        try: corpo = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
+        except ValueError: return self.json(400, {"erro": "JSON invalido"})
+        if u.path == "/api/run":
+            q = parse_qs(u.query)
+            try: return self.json(200, rodar(q.get("fonte", ["demo"])[0], q.get("porta", [PORTA])[0]))
+            except Exception as e: return self.json(500, {"erro": str(e)})
+        if u.path == "/api/chat":
+            if not isinstance(corpo, dict) or not corpo.get("pergunta"): return self.json(400, {"erro": "campo 'pergunta' obrigatorio"})
             txt, erro = ia.chat(corpo["pergunta"], corpo.get("resumo", ""), ia.resumo_historico(carregar()))
             return self.json(200 if txt else 500, {"resposta": txt, "erro": erro})
-        if self.path == "/api/historico/analise":
+        if u.path == "/api/historico/analise":
             h = carregar()
             if len(h) < 2: return self.json(400, {"erro": "Preciso de pelo menos 2 testes no historico."})
             txt, erro = ia.laudo_historico(h)
@@ -110,5 +124,11 @@ class H(BaseHTTPRequestHandler):
 
     def log_message(self, *a): pass
 
-print("http://127.0.0.1:3000")
-ThreadingHTTPServer((os.environ.get("HOST", "127.0.0.1"), 3000), H).serve_forever()  # so localhost: a chave OpenAI nunca sai da maquina
+def main():
+    subprocess.run(["gcc", "-Wall", "-Wextra", "-std=c11", "-o", BIN, os.path.join(DIR, "ecotech_co2_sensor.c")], check=True)
+    porta = int(os.environ.get("PORT", 3000))
+    print(f"http://127.0.0.1:{porta}")
+    ThreadingHTTPServer((os.environ.get("HOST", "127.0.0.1"), porta), H).serve_forever()  # so localhost: a chave OpenAI nunca sai da maquina
+
+if __name__ == "__main__":
+    main()
