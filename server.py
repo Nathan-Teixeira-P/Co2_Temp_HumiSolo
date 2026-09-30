@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""Frontend local: python3 server.py  ->  http://127.0.0.1:3000
-POST /api/run   ?fonte=demo | ?fonte=serial&porta=/dev/ttyACM0
-POST /api/chat  {"pergunta", "resumo"}   (teste na tela + historico)
-GET  /api/historico[/id] · POST /api/historico/analise   (ultimos 10 testes em dados/historico.json)
-"""
 import datetime, glob, json, os, random, subprocess, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -13,12 +8,12 @@ DIR = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.join(DIR, "ecotech_sensor")
 AMOSTRAS = 24
 TOTAL = AMOSTRAS * len(ia.NOMES)
-PORTA = (sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*")) or ["/dev/ttyACM0"])[0]  # porta do Arduino detectada
+PORTA = (sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*")) or ["/dev/ttyACM0"])[0]
 DADOS = os.environ.get("DADOS", os.path.join(DIR, "dados"))
 ARQ = os.path.join(DADOS, "historico.json")
 MAX_HIST = 10
 trava = threading.Lock()
-trava_serial = threading.Lock()  # so uma leitura por vez na porta
+trava_serial = threading.Lock()
 
 def carregar():
     try: return json.load(open(ARQ, encoding="utf-8"))
@@ -32,17 +27,16 @@ def salvar(fonte, r):
         os.makedirs(DADOS, exist_ok=True)
         tmp = ARQ + ".tmp"
         json.dump(h[-MAX_HIST:], open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
-        os.replace(tmp, ARQ)  # troca atomica: nunca deixa o historico pela metade
+        os.replace(tmp, ARQ)
 
 def serie(tipo, base, passo, ruido, lo, hi):
     n = AMOSTRAS
     if tipo == "estavel": return [base + random.uniform(-ruido, ruido) for _ in range(n)]
     if tipo == "tendencia": return [base + i * passo + random.uniform(-ruido, ruido) for i in range(n)]
     if tipo == "travado": return [base + i * 0.2 for i in range(6)] + [base + 1] * (n - 6)
-    return [random.choice([lo, hi]) + random.uniform(-ruido, ruido) for _ in range(n)]  # ruidoso
+    return [random.choice([lo, hi]) + random.uniform(-ruido, ruido) for _ in range(n)]
 
 def demo():
-    """24 linhas ppm,solo,temp; cada canal sorteia um comportamento."""
     sorteio = lambda: random.choices(["estavel", "tendencia", "travado", "ruidoso"], [40, 35, 12, 13])[0]
     linhas = []
     for _ in ia.NOMES:
@@ -75,7 +69,6 @@ def rodar(fonte, porta):
         finally: trava_serial.release()
     else:
         rows = demo()
-    # o programa em C (entrega da disciplina) continua sendo o painel oficial de CO2
     c = subprocess.run([BIN], input="".join(f"{int(r[0])}\n" for r in rows), capture_output=True, text=True, timeout=30)
     r = ia.processar(rows, c.stdout.strip())
     salvar(fonte, r)
@@ -128,7 +121,7 @@ def main():
     subprocess.run(["gcc", "-Wall", "-Wextra", "-std=c11", "-o", BIN, os.path.join(DIR, "ecotech_co2_sensor.c")], check=True)
     porta = int(os.environ.get("PORT", 3000))
     print(f"http://127.0.0.1:{porta}")
-    ThreadingHTTPServer((os.environ.get("HOST", "127.0.0.1"), porta), H).serve_forever()  # so localhost: a chave OpenAI nunca sai da maquina
+    ThreadingHTTPServer((os.environ.get("HOST", "127.0.0.1"), porta), H).serve_forever()
 
 if __name__ == "__main__":
     main()

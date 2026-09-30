@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Sobe tudo: confere requisitos, inicia o servidor e abre o navegador.
 cd "$(dirname "$0")" || exit 1
 command -v gcc >/dev/null || { echo "Falta o gcc (sudo apt install gcc)"; exit 1; }
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || { echo "Preciso de Python 3.10+"; exit 1; }

@@ -1,30 +1,25 @@
 #!/usr/bin/env python3
-"""Analise local (previsao, diagnostico de sensor, correlacao, risco, regras) + IA (laudo e chat).
-CLI: cat /dev/ttyACM0 | python3 analisar_ia.py     (linhas "ppm,solo,temp")
-Tambem importado pelo server.py.
-"""
 import json, os, statistics, sys, urllib.error, urllib.request
 
 ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-for linha in open(ENV) if os.path.exists(ENV) else []:  # no Docker a chave vem do ambiente
+for linha in open(ENV) if os.path.exists(ENV) else []:
     if "=" in linha and not linha.startswith("#"):
         k, v = linha.strip().split("=", 1)
         os.environ.setdefault(k, v)
 
-INTERVALO_S = 2   # segundos entre amostras (igual ao Arduino)
-TRAVADO = 5       # leituras identicas seguidas = sensor congelado
-NOMES = ["Estufa do tio Valdir"]  # mesmo nome do programa em C
-# sentido +1: ruim quando SOBE acima do limite; -1: ruim quando CAI abaixo dele
+INTERVALO_S = 2
+TRAVADO = 5
+NOMES = ["Estufa do tio Valdir"]
 CANAIS = {
     "co2":  dict(rot="CO2", un="ppm", limite=1000, sentido=1, salto=400, faixa=(200, 10000)),
     "solo": dict(rot="Umidade do solo", un="%", limite=30, sentido=-1, salto=25, faixa=(0, 100)),
-    "temp": dict(rot="Temperatura", un="°C", limite=32, sentido=1, salto=5, faixa=(-10, 60), travado=None),  # resolucao de 1 C: valor repetido e normal
+    "temp": dict(rot="Temperatura", un="°C", limite=32, sentido=1, salto=5, faixa=(-10, 60), travado=None),
 }
 
 def canal(v, c):
     n = len(v)
     mx, my = (n - 1) / 2, sum(v) / n
-    a = slope(v)  # minimos quadrados
+    a = slope(v)
     b = my - a * mx
     lim, s = c["limite"], c["sentido"]
     if v[-1] * s >= lim * s:
@@ -40,7 +35,7 @@ def canal(v, c):
         mx_run = max(mx_run, run)
     susp = []
     if saltos: susp.append(f"{saltos} saltos > {c['salto']} {c['un']}")
-    lim_travado = c.get("travado", TRAVADO)  # None = canal sem checagem de travamento
+    lim_travado = c.get("travado", TRAVADO)
     if lim_travado and mx_run >= lim_travado: susp.append(f"{mx_run} leituras identicas seguidas")
     if not all(c["faixa"][0] <= x <= c["faixa"][1] for x in v): susp.append("fora da faixa fisica")
     return {"valores": v, "media": my, "min": min(v), "max": max(v), "tendencia": a * 60 / INTERVALO_S,
@@ -49,17 +44,16 @@ def canal(v, c):
 
 def corr(x, y):
     try: return statistics.correlation(x, y)
-    except statistics.StatisticsError: return None  # serie constante
+    except statistics.StatisticsError: return None
 
 def setor(nome, rows):
     ch = {k: canal([r[i] for r in rows], c) for i, (k, c) in enumerate(CANAIS.items())}
     co2, solo, temp = ch["co2"], ch["solo"], ch["temp"]
-    # risco 0 (otimo) a 100 (pessimo): penalidades simples e auditaveis
     risco = (40 if co2["media"] >= 1300 else 20 if co2["media"] >= 1000 else 0) \
           + (40 if solo["media"] < 20 else 30 if solo["media"] < 30 else 0) \
           + (25 if temp["media"] > 32 else 0) \
           + 10 * sum(bool(c["suspeito"]) for c in ch.values())
-    regras = []  # acoes deterministicas; a IA so explica/prioriza
+    regras = []
     if co2["media"] >= 1000: regras.append("Ventilar / acionar exaustao")
     if solo["media"] < 30: regras.append("Irrigar")
     elif solo["tendencia"] < 0 and "cruza" in solo["previsao"]: regras.append("Programar irrigacao: solo secando")
@@ -120,7 +114,6 @@ def chat(pergunta, resumo, historico=""):
                    {"role": "user", "content": pergunta}])
 
 def processar(rows, painel=""):
-    """rows = [(ppm, solo_pct, temp_c), ...], setores em ordem, mesmo tamanho cada."""
     n = len(rows) // len(NOMES)
     if n < 3: raise ValueError(f"Poucas leituras ({len(rows)}); preciso de ao menos {3 * len(NOMES)}.")
     setores = [setor(nome, rows[i * n:(i + 1) * n]) for i, nome in enumerate(NOMES)]
@@ -136,7 +129,6 @@ def slope(ys):
     return sum((i - mx) * (y - my) for i, y in enumerate(ys)) / sum((i - mx) ** 2 for i in range(n))
 
 def historico_local(hist):
-    """hist = lista de entradas {ts, fonte, resultado}, da mais antiga para a mais nova."""
     n = len(hist)
     if n == 0: return {"n": 0, "canais": {}, "risco": {"serie": [], "tendencia": 0}, "insights": []}
     ss = [e["resultado"]["setores"] for e in hist]
@@ -148,7 +140,7 @@ def historico_local(hist):
         t = slope(medias)
         canais[k] = {"medias": medias, "tendencia": t, "variacao": medias[-1] - medias[-2] if n > 1 else 0,
                      "alem_limite_em": alem, "suspeito_em": susp}
-        if n > 1 and abs(t) * (n - 1) > 0.05 * abs(c["limite"]):  # mudou mais de 5% do limite ao longo do historico
+        if n > 1 and abs(t) * (n - 1) > 0.05 * abs(c["limite"]):
             insights.append(f"{c['rot']}: media {'subindo' if t > 0 else 'caindo'} {abs(t):.1f} {c['un']} por teste "
                             f"(de {medias[0]:.1f} para {medias[-1]:.1f}).")
         if alem: insights.append(f"{c['rot']}: media alem do limite em {alem} de {n} testes.")
@@ -186,7 +178,7 @@ def parse(texto):
         try:
             if len(p) == 3: rows.append(tuple(float(x) for x in p))
         except ValueError:
-            pass  # ruido de serial
+            pass
     return rows
 
 if __name__ == "__main__":

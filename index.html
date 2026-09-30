@@ -117,7 +117,6 @@ const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;"
 const ICON = {co2: "🌫️", solo: "💧", temp: "🌡️"};
 const URG = {alta: ["bad", "Urgência alta"], media: ["warn", "Urgência média"], baixa: ["ok", "Urgência baixa"]};
 
-// Estado de um canal: media alem do limite (bad); ultima leitura alem, tendencia de risco ou sensor suspeito (warn); ou ok.
 function estado(c, def) {
   const alem = def.sentido * (c.media - def.limite) >= 0;
   if (alem) return ["bad", "Fora do limite"];
@@ -219,7 +218,6 @@ function render(r) {
   document.querySelectorAll(".sug button").forEach(b => b.onclick = () => ask(b.dataset.q));
 }
 
-// ---------- historico dos ultimos 10 testes ----------
 function mini(vals, lim, un, cor) {
   const W = 300, H = 90, m = {l: 34, r: 8, t: 8, b: 16}, n = vals.length;
   const todos = lim == null ? vals : [...vals, lim];
