@@ -1,0 +1,7 @@
+.env
+.git
+arduino
+*.pdf
+ecotech_sensor
+ecotech_co2
+dados

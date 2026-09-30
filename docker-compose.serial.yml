@@ -1,0 +1,4 @@
+services:
+  ecotech:
+    devices:
+      - "${PORTA:-/dev/ttyACM0}:${PORTA:-/dev/ttyACM0}"

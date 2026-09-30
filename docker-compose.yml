@@ -1,0 +1,10 @@
+# Demonstracao: docker compose up --build
+# Sensor real:  docker compose -f docker-compose.yml -f docker-compose.serial.yml up --build
+services:
+  ecotech:
+    build: .
+    env_file: .env          # a chave fica fora da imagem
+    ports:
+      - "127.0.0.1:3000:3000"   # so localhost, nunca a rede
+    volumes:
+      - ./dados:/app/dados      # historico dos ultimos 10 testes sobrevive a reinicios

@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Analise local (previsao, diagnostico de sensor, correlacao, risco, regras) + IA (laudo e chat).
+CLI: cat /dev/ttyACM0 | python3 analisar_ia.py     (linhas "ppm,solo,temp")
+Tambem importado pelo server.py.
+"""
+import json, os, statistics, sys, urllib.error, urllib.request
+
+ENV = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+for linha in open(ENV) if os.path.exists(ENV) else []:  # no Docker a chave vem do ambiente
+    if "=" in linha and not linha.startswith("#"):
+        k, v = linha.strip().split("=", 1)
+        os.environ.setdefault(k, v)
+
+INTERVALO_S = 2   # segundos entre amostras (igual ao Arduino)
+TRAVADO = 5       # leituras identicas seguidas = sensor congelado
+NOMES = ["Estufa do tio Valdir"]  # mesmo nome do programa em C
+# sentido +1: ruim quando SOBE acima do limite; -1: ruim quando CAI abaixo dele
+CANAIS = {
+    "co2":  dict(rot="CO2", un="ppm", limite=1000, sentido=1, salto=400, faixa=(200, 10000)),
+    "solo": dict(rot="Umidade do solo", un="%", limite=30, sentido=-1, salto=25, faixa=(0, 100)),
+    "temp": dict(rot="Temperatura", un="°C", limite=32, sentido=1, salto=5, faixa=(-10, 60), travado=None),  # resolucao de 1 C: valor repetido e normal
+}
+
+def canal(v, c):
+    n = len(v)
+    mx, my = (n - 1) / 2, sum(v) / n
+    a = sum((i - mx) * (y - my) for i, y in enumerate(v)) / sum((i - mx) ** 2 for i in range(n))  # minimos quadrados
+    b = my - a * mx
+    lim, s = c["limite"], c["sentido"]
+    if v[-1] * s >= lim * s:
+        prev = f"ja alem do limite ({lim} {c['un']})"
+    elif a * s > 0:
+        prev = f"cruza {lim} {c['un']} em ~{(lim - (a * (n - 1) + b)) / a * INTERVALO_S / 60:.1f} min"
+    else:
+        prev = "nao deve cruzar o limite"
+    saltos = sum(abs(v[i] - v[i - 1]) > c["salto"] for i in range(1, n))
+    run = mx_run = 1
+    for i in range(1, n):
+        run = run + 1 if v[i] == v[i - 1] else 1
+        mx_run = max(mx_run, run)
+    susp = []
+    if saltos: susp.append(f"{saltos} saltos > {c['salto']} {c['un']}")
+    if mx_run >= c.get("travado", TRAVADO) if c.get("travado", TRAVADO) else False: susp.append(f"{mx_run} leituras identicas seguidas")
+    if not all(c["faixa"][0] <= x <= c["faixa"][1] for x in v): susp.append("fora da faixa fisica")
+    return {"valores": v, "media": my, "min": min(v), "max": max(v), "tendencia": a * 60 / INTERVALO_S,
+            "reta": [b, a], "previsao": prev, "suspeito": susp,
+            "fora": sum(x * s > lim * s for x in v)}
+
+def corr(x, y):
+    try: return statistics.correlation(x, y)
+    except statistics.StatisticsError: return None  # serie constante
+
+def setor(nome, rows):
+    ch = {k: canal([r[i] for r in rows], c) for i, (k, c) in enumerate(CANAIS.items())}
+    co2, solo, temp = ch["co2"], ch["solo"], ch["temp"]
+    # risco 0 (otimo) a 100 (pessimo): penalidades simples e auditaveis
+    risco = (40 if co2["media"] >= 1300 else 20 if co2["media"] >= 1000 else 0) \
+          + (40 if solo["media"] < 20 else 30 if solo["media"] < 30 else 0) \
+          + (25 if temp["media"] > 32 else 0) \
+          + 10 * sum(bool(c["suspeito"]) for c in ch.values())
+    regras = []  # acoes deterministicas; a IA so explica/prioriza
+    if co2["media"] >= 1000: regras.append("Ventilar / acionar exaustao")
+    if solo["media"] < 30: regras.append("Irrigar")
+    elif solo["tendencia"] < 0 and "cruza" in solo["previsao"]: regras.append("Programar irrigacao: solo secando")
+    if temp["media"] > 32: regras.append("Sombrear / resfriar")
+    for k, c in ch.items():
+        if c["suspeito"]: regras.append(f"Verificar sensor de {CANAIS[k]['rot']}")
+    cor = {p: corr(ch[a]["valores"], ch[b]["valores"]) for p, (a, b) in
+           {"CO2 x temperatura": ("co2", "temp"), "CO2 x solo": ("co2", "solo"), "temperatura x solo": ("temp", "solo")}.items()}
+    return {"nome": nome, "canais": ch, "risco": min(risco, 100), "regras": regras,
+            "correlacoes": {k: round(v, 2) for k, v in cor.items() if v is not None}}
+
+def resumo_texto(setores):
+    linhas = []
+    for s in setores:
+        linhas.append(f"{s['nome']} (risco {s['risco']}/100):")
+        for k, c in s["canais"].items():
+            u = CANAIS[k]
+            sens = "SUSPEITO (" + ", ".join(c["suspeito"]) + ")" if c["suspeito"] else "ok"
+            linhas.append(f"  - {u['rot']}: media {c['media']:.1f} {u['un']} (min {c['min']:.1f}, max {c['max']:.1f}), "
+                          f"tendencia {c['tendencia']:+.2f} {u['un']}/min, {c['previsao']}; sensor {sens}")
+        linhas.append("  - correlacoes: " + (", ".join(f"{k} {v:+.2f}" for k, v in s["correlacoes"].items()) or "n/d"))
+        linhas.append("  - acoes por regra: " + ("; ".join(s["regras"]) or "nenhuma"))
+    return "\n".join(linhas)
+
+def openai(messages, json_mode=False):
+    corpo = {"model": "gpt-4o-mini", "messages": messages}
+    if json_mode: corpo["response_format"] = {"type": "json_object"}
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions", data=json.dumps(corpo).encode(),
+        headers={"authorization": "Bearer " + os.environ["OPENAI_API_KEY"], "content-type": "application/json"})
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=60))["choices"][0]["message"]["content"], None
+    except urllib.error.HTTPError as e:
+        return None, f"Erro {e.code}: {e.read().decode()}"
+    except Exception as e:
+        return None, str(e)
+
+SISTEMA = ("Voce e um agronomo assistente de uma estufa. Os dados vem de sensores baratos: CO2 (MH-Z19B), "
+           "umidade do solo (capacitivo) e temperatura (interna do MH-Z19B, erro de alguns graus). "
+           "Limites: CO2 > 1000 ppm alerta, media > 1300 critica; solo < 30% seco; temperatura > 32 C estresse termico. "
+           "Considere a previsao e a saude dos sensores: leitura de sensor SUSPEITO nao e confiavel. Portugues, direto.")
+
+def laudo(resumo, painel):
+    txt, erro = openai([
+        {"role": "system", "content": SISTEMA + ' Responda SOMENTE JSON: {"resumo_geral": str, "setores": '
+         '[{"nome": str, "urgencia": "baixa|media|alta", "diagnostico": str, "acoes": [str]}], '
+         '"insights": [str]}. "insights" = relacoes entre CO2, solo e temperatura ou riscos que as regras nao pegam.'},
+        {"role": "user", "content": "ANALISE:\n" + resumo + "\n\nPAINEL DO PROGRAMA EM C (CO2):\n" + painel}], json_mode=True)
+    if erro: return None, erro
+    try: return json.loads(txt), None
+    except ValueError: return None, "IA devolveu JSON invalido"
+
+def chat(pergunta, resumo, historico=""):
+    return openai([{"role": "system", "content": SISTEMA + " Responda a pergunta usando so estes dados.\nTESTE ATUAL:\n" + resumo
+                    + ("\n\nHISTORICO DOS ULTIMOS TESTES:\n" + historico if historico else "")},
+                   {"role": "user", "content": pergunta}])
+
+def processar(rows, painel=""):
+    """rows = [(ppm, solo_pct, temp_c), ...], setores em ordem, mesmo tamanho cada."""
+    n = len(rows) // len(NOMES)
+    if n < 3: raise ValueError(f"Poucas leituras ({len(rows)}); preciso de ao menos {3 * len(NOMES)}.")
+    setores = [setor(nome, rows[i * n:(i + 1) * n]) for i, nome in enumerate(NOMES)]
+    resumo = resumo_texto(setores)
+    ia, erro = laudo(resumo, painel)
+    return {"setores": setores, "canais": CANAIS, "painel": painel, "resumo": resumo,
+            "laudo": ia, "erro_laudo": erro, "intervalo_s": INTERVALO_S}
+
+def slope(ys):
+    n = len(ys)
+    if n < 2: return 0.0
+    mx, my = (n - 1) / 2, sum(ys) / n
+    return sum((i - mx) * (y - my) for i, y in enumerate(ys)) / sum((i - mx) ** 2 for i in range(n))
+
+def historico_local(hist):
+    """hist = lista de entradas {ts, fonte, resultado}, da mais antiga para a mais nova."""
+    n = len(hist)
+    if n == 0: return {"n": 0, "canais": {}, "risco": {"serie": [], "tendencia": 0}, "insights": []}
+    ss = [e["resultado"]["setores"] for e in hist]
+    canais, insights = {}, []
+    for k, c in CANAIS.items():
+        medias = [sum(x["canais"][k]["media"] for x in s) / len(s) for s in ss]
+        alem = sum(c["sentido"] * (m - c["limite"]) >= 0 for m in medias)
+        susp = sum(any(x["canais"][k]["suspeito"] for x in s) for s in ss)
+        t = slope(medias)
+        canais[k] = {"medias": medias, "tendencia": t, "variacao": medias[-1] - medias[-2] if n > 1 else 0,
+                     "alem_limite_em": alem, "suspeito_em": susp}
+        if n > 1 and abs(t) * (n - 1) > 0.05 * abs(c["limite"]):  # mudou mais de 5% do limite ao longo do historico
+            insights.append(f"{c['rot']}: media {'subindo' if t > 0 else 'caindo'} {abs(t):.1f} {c['un']} por teste "
+                            f"(de {medias[0]:.1f} para {medias[-1]:.1f}).")
+        if alem: insights.append(f"{c['rot']}: media alem do limite em {alem} de {n} testes.")
+        if susp: insights.append(f"Sensor de {c['rot']} suspeito em {susp} de {n} testes"
+                                 + (" (problema recorrente: vale checar o hardware)." if susp >= 3 else "."))
+    risco = [max(x["risco"] for x in s) for s in ss]
+    if n > 1 and slope(risco) > 3: insights.append(f"Risco geral em alta ({risco[0]} -> {risco[-1]}).")
+    return {"n": n, "canais": canais, "risco": {"serie": risco, "tendencia": slope(risco)}, "insights": insights}
+
+def resumo_historico(hist):
+    h = historico_local(hist)
+    linhas = []
+    for i, e in enumerate(hist, 1):
+        s = e["resultado"]["setores"][0]
+        med = ", ".join(f"{CANAIS[k]['rot']} {c['media']:.1f} {CANAIS[k]['un']}" for k, c in s["canais"].items())
+        susp = [CANAIS[k]["rot"] for k, c in s["canais"].items() if c["suspeito"]]
+        linhas.append(f"#{i} {e['ts']} ({e['fonte']}): risco {s['risco']}/100; {med}; sensores suspeitos: {', '.join(susp) or 'nenhum'}")
+    return "\n".join(linhas) + "\nPadroes calculados: " + (" ".join(h["insights"]) or "nenhum")
+
+def laudo_historico(hist):
+    txt, erro = openai([
+        {"role": "system", "content": SISTEMA + " Voce analisa o HISTORICO de testes (do mais antigo ao mais novo). "
+         "Testes com fonte 'demo' sao simulados: se o historico for de demonstracao, diga isso. "
+         'Responda SOMENTE JSON: {"resumo": str, "padroes": [str], "recomendacoes": [str]}. '
+         "Foque em evolucao no tempo, recorrencia de falhas de sensor e o que muda a decisao de manejo."},
+        {"role": "user", "content": resumo_historico(hist)}], json_mode=True)
+    if erro: return None, erro
+    try: return json.loads(txt), None
+    except ValueError: return None, "IA devolveu JSON invalido"
+
+def parse(texto):
+    rows = []
+    for l in texto.splitlines():
+        p = l.strip().split(",")
+        try:
+            if len(p) == 3: rows.append(tuple(float(x) for x in p))
+        except ValueError:
+            pass  # ruido de serial
+    return rows
+
+if __name__ == "__main__":
+    r = processar(parse(sys.stdin.read()))
+    print(r["resumo"], "\n\n", json.dumps(r["laudo"] or r["erro_laudo"], ensure_ascii=False, indent=2))
