@@ -120,7 +120,7 @@ class H(BaseHTTPRequestHandler):
 def main():
     subprocess.run(["gcc", "-Wall", "-Wextra", "-std=c11", "-o", BIN, os.path.join(DIR, "ecotech_co2_sensor.c")], check=True)
     porta = int(os.environ.get("PORT", 3000))
-    print(f"http://127.0.0.1:{porta}")
+    print(f"http://localhost:{porta}")
     ThreadingHTTPServer((os.environ.get("HOST", "127.0.0.1"), porta), H).serve_forever()
 
 if __name__ == "__main__":

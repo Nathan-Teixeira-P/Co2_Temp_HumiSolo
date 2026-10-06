@@ -5,5 +5,5 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || { echo "Preciso
 grep -q '^OPENAI_API_KEY=.\+' .env 2>/dev/null || { echo "Falta OPENAI_API_KEY no arquivo .env"; exit 1; }
 porta=$(ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null | head -1)
 echo "Porta serial: ${porta:-nenhuma (use o modo Demonstracao)}"
-(sleep 2; xdg-open http://127.0.0.1:3000 >/dev/null 2>&1) &
+(sleep 2; xdg-open http://localhost:3000 >/dev/null 2>&1) &
 exec python3 server.py

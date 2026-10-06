@@ -1,6 +1,3 @@
-/* ALUNO: >>> PREENCHER COM O NOME COMPLETO ANTES DE ENVIAR NO LXP <<<
- * Disciplina: Algoritmo e Estrutura de Dados - Prof. Me. Valdir Prado */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
